@@ -25,8 +25,6 @@ using namespace std;
 #define DATAPIN  2  // wiringPi GPIO 2 (P1.13)
 
 unsigned long timings[RING_BUFFER_SIZE];
-unsigned int syncIndex1 = 0;  // index of the first sync signal
-unsigned int syncIndex2 = 0;  // index of the second sync signal
 
 
 int t2b(unsigned int t0, unsigned int t1);
@@ -52,21 +50,48 @@ public:
        {
           printf("Finished?\n");
 
-
-          for (int i = 0; i < m_alTimings.size(); i += 2)
+          int iHumidity = 0;
+          if (!InterpretValue(3 * 8 + 1, 7, iHumidity))
           {
-             int bit = t2b(m_alTimings[i], m_alTimings[i + 1]);
-             if (bit < 0)
-             {
-                printf("Errro!!!!!!!!!!!!!1\n");
-                return false;
-             }
+             printf("Humidity error!!!!!!!!!!!!!1\n");
+             return false;
           }
-          printf("Success!!!!!!!!!!!!!!\n");
+
+          int iTemp = 0;
+          if (!InterpretValue(4 * 8 + 4, 4, iTemp) ||
+              !InterpretValue(5 * 8 + 1, 7, iTemp))
+          {
+             printf("Temp error!!!!!!!!!!!!!1\n");
+             return false;
+          }
+          printf("Success!!!!!!!!!!!!!! Humidity: %i\n", iHumidity);
+          printf("Temperature: %d C  %d F\n", GetCelTempVal(iTemp),
+                 (int) (GetCelTempVal(iTemp) * 9 / 5 + 32));
+
           return false;
        }
 
        return true;
+    }
+
+protected:
+    bool InterpretValue(int iStart, int iLength, int& riValue)
+    {
+       for (int i = iStart; i < iStart + iLength; i++)
+       {
+          int iBit = t2b(m_alTimings[i*2], m_alTimings[i*2 + 1]);
+          if (iBit < 0)
+             return false;
+
+          riValue = (riValue << 1) + iBit;
+       }
+
+       return true;
+    }
+
+    int GetCelTempVal(int iRawTemp)
+    {
+       return (iTemp - 1024) / 10 + 1.9 + 0.5;
     }
 
 protected:
@@ -108,39 +133,6 @@ bool isSync(unsigned int idx)
    return true;
 }
 
-void data_handler()
-{
-   if (data_index < 0)
-      return;
-
-   static unsigned long duration2 = 0;
-   static unsigned long lastTime2 = 0;
-
-   // calculating timing since last change
-   long time = micros();
-   duration2 = time - lastTime2;
-   lastTime2 = time;
-
-   // store data in ring buffer
-   data_timings[data_index] = duration2;
-
-   if (duration2 > 10000 && data_index > 25) {
-      printf("count: %i\n", data_index);
-      for (int i = 1; i < data_index; i++)
-         printf("%i\t", data_timings[i]);
-      printf("\n");
-
-      int start_bit = data_index - 101;
-      for (int i = start_bit; i < data_index; i++)
-         printf("%c", data_timings[i] > 300 ? '1' : '0');
-
-      printf("\n");
-      data_index = -1;
-   }
-   if (data_index >= 0)
-      data_index++;
-}
-
 /* Interrupt 1 handler */
 void handler()
 {
@@ -151,10 +143,6 @@ void handler()
 
    NotifyHandlers();
 
-   // ignore if we haven't processed the previous received signal
-   if (received == true) {
-      return;
-   }
    // calculating timing since last change
    long time = micros();
    duration = time - lastTime;
@@ -164,71 +152,8 @@ void handler()
    ringIndex = (ringIndex + 1) % RING_BUFFER_SIZE;
    timings[ringIndex] = duration;
 
-   // detect sync signal
-   /*
-   if (isSync(ringIndex)) {
-     data_index = 0;
-     syncCount ++;
-     // first time sync is seen, record buffer index
-     if (syncCount == 1) {
-       syncIndex1 = (ringIndex+1) % RING_BUFFER_SIZE;
-     }
-     else if (syncCount == 2) {
-       // second time sync is seen, start bit conversion
-       syncCount = 0;
-       syncIndex2 = (ringIndex+1) % RING_BUFFER_SIZE;
-       unsigned int changeCount = (syncIndex2 < syncIndex1) ? (syncIndex2+RING_BUFFER_SIZE - syncIndex1) : (syncIndex2 - syncIndex1);
-       printf("%i\n", changeCount);
-       // changeCount must be 122 -- 60 bits x 2 + 2 for sync
-       if (changeCount != 122 && false){
-         received = false;
-         syncIndex1 = 0;
-         syncIndex2 = 0;
-    printf("sync detected, incorrect change count\n");
-       }
-       else {
-         received = true;
-       }
-     }
-
-   }
-   */
-   if (isSync(ringIndex) && !in_data) {
-      data_index = 0;
-      syncCount++;
+   if (isSync(ringIndex))
       g_apWatchers.push_back(new CDataWatcher());
-      // first time sync is seen, record buffer index
-      if (syncCount == 1) {
-         syncIndex1 = (ringIndex + 1) % RING_BUFFER_SIZE;
-         in_data = true;
-      }
-   }
-
-
-   syncIndex2 = (ringIndex + 1) % RING_BUFFER_SIZE;
-   unsigned int changeCount = (syncIndex2 < syncIndex1) ? (syncIndex2 + RING_BUFFER_SIZE - syncIndex1) : (syncIndex2 -
-                                                                                                          syncIndex1);
-   if (syncCount == 1)
-      printf("changeCount: %i\n", changeCount);
-   if (syncCount == 1 && changeCount == 122) {
-      in_data = false;
-      // second time sync is seen, start bit conversion
-      //syncCount = 0;
-      printf("%i\n", changeCount);
-      // changeCount must be 122 -- 60 bits x 2 + 2 for sync
-      if (changeCount != 122 && false) {
-         received = false;
-         syncIndex1 = 0;
-         syncIndex2 = 0;
-         syncCount = 0;
-         printf("sync detected, incorrect change count\n");
-      } else {
-         system("/usr/bin/gpio edge 2 none");
-         received = true;
-      }
-   }
-
-   data_handler();
 }
 
 
@@ -247,68 +172,7 @@ int t2b(unsigned int t0, unsigned int t1)
 
 void loop()
 {
-   if (received == true) {
-      // disable interrupt to avoid new data corrupting the buffer
-      system("/usr/bin/gpio edge 2 none");
-
-      // extract humidity value
-      unsigned int startIndex, stopIndex;
-      unsigned long humidity = 0;
-      bool fail = false;
-      startIndex = (syncIndex1 + (3 * 8 + 1) * 2) % RING_BUFFER_SIZE;
-      stopIndex = (syncIndex1 + (3 * 8 + 8) * 2) % RING_BUFFER_SIZE;
-
-      for (int i = startIndex; i != stopIndex; i = (i + 2) % RING_BUFFER_SIZE) {
-         int bit = t2b(timings[i], timings[(i + 1) % RING_BUFFER_SIZE]);
-         humidity = (humidity << 1) + bit;
-         if (bit < 0) fail = true;
-      }
-      if (fail) { printf("Decoding error.\n"); }
-      else {
-         printf("Humidity: %d\% /  ", humidity);
-      }
-
-      // extract temperature value
-      unsigned long temp = 0;
-      fail = false;
-      // most significant 4 bits
-      startIndex = (syncIndex1 + (4 * 8 + 4) * 2) % RING_BUFFER_SIZE;
-      stopIndex = (syncIndex1 + (4 * 8 + 8) * 2) % RING_BUFFER_SIZE;
-      for (int i = startIndex; i != stopIndex; i = (i + 2) % RING_BUFFER_SIZE) {
-         int bit = t2b(timings[i], timings[(i + 1) % RING_BUFFER_SIZE]);
-         temp = (temp << 1) + bit;
-         if (bit < 0) fail = true;
-      }
-      // least significant 7 bits
-      startIndex = (syncIndex1 + (5 * 8 + 1) * 2) % RING_BUFFER_SIZE;
-      stopIndex = (syncIndex1 + (5 * 8 + 8) * 2) % RING_BUFFER_SIZE;
-      for (int i = startIndex; i != stopIndex; i = (i + 2) % RING_BUFFER_SIZE) {
-         int bit = t2b(timings[i], timings[(i + 1) % RING_BUFFER_SIZE]);
-         temp = (temp << 1) + bit;
-         if (bit < 0) fail = true;
-      }
-      if (fail) { printf("Decoding error.\n"); }
-      else {
-         printf("Temperature: %d C  %d F\n", (int) ((temp - 1024) / 10 + 1.9 + .5),
-                (int) (((temp - 1024) / 10 + 1.9 + 0.5) * 9 / 5 + 32));
-      }
-/*
-	printf("raw data:\n");
-	for(int i = syncIndex1; i != syncIndex2; i = (i+1)%RING_BUFFER_SIZE){
-		printf("%d ",timings[i]);
-	}
-	printf("\n");
-*/    // delay for 1 second to avoid repetitions
-      delay(1000);
-      received = false;
-      syncIndex1 = 0;
-      syncIndex2 = 0;
-
-      // re-enable interrupt
-      wiringPiISR(DATAPIN, INT_EDGE_BOTH, &handler);
-      //wiringPiISR(DATAPIN,INT_EDGE_BOTH,&data_handler);
-   } else
-      delay(100);
+   delay(100);
 }
 
 int main(int argc, char *args[])
