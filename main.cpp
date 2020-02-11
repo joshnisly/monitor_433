@@ -37,10 +37,6 @@ public:
        m_lLastTick = micros();
     }
 
-    ~CDataWatcher()
-    {
-    }
-
     bool OnTick()
     {
        m_alTimings.push_back(micros() - m_lLastTick);
@@ -48,25 +44,48 @@ public:
 
        if (m_alTimings.size() == 122)
        {
-          printf("Finished?\n");
+          int iSignature = 0;
+          if (!InterpretValue(2 * 8, 8, iSignature) || iSignature != 68)
+             return false;
+
+          int iABC = 0;
+          if (!InterpretValue(0, 2, iABC))
+             return false;
+
+          int iChannel = 0;
+          if (!InterpretValue(0 * 8, 16, iChannel))
+             return false;
 
           int iHumidity = 0;
           if (!InterpretValue(3 * 8 + 1, 7, iHumidity))
-          {
-             printf("Humidity error!!!!!!!!!!!!!1\n");
              return false;
-          }
 
           int iTemp = 0;
-          if (!InterpretValue(4 * 8 + 4, 4, iTemp) ||
-              !InterpretValue(5 * 8 + 1, 7, iTemp))
+          if (!InterpretValue(4 * 8 + 4, 4, iTemp) || !InterpretValue(5 * 8 + 1, 7, iTemp))
+             return false;
+
+          // Check CRC
+          int iTotal = 0;
+          for (int i = 0; i < 6; i++)
           {
-             printf("Temp error!!!!!!!!!!!!!1\n");
+             int iByte = 0;
+             if (!InterpretValue(i * 8, 8, iByte))
+             {
+                printf("Bad CRC?\n");
+                return false;
+             }
+             iTotal += iByte;
+          }
+          int iCRC = 0;
+          if (!InterpretValue(6 * 8, 8, iCRC))
+          {
+             printf("Invalid CRC\n");
              return false;
           }
-          printf("Success!!!!!!!!!!!!!! Humidity: %i\n", iHumidity);
-          printf("Temperature: %d C  %d F\n", GetCelTempVal(iTemp),
-                 (int) (GetCelTempVal(iTemp) * 9 / 5 + 32));
+          bool bValidCRC = (iTotal & 0xFF) == iCRC;
+
+          printf("%c\t%i\t%i\t%i\t%0.2f C\t%0.2f F\n",
+                 bValidCRC ? 'S' : 'F', iABC, iChannel, iHumidity, GetCelTempVal(iTemp), GetCelTempVal(iTemp) * 9 / 5 + 32);
 
           return false;
        }
@@ -89,9 +108,9 @@ protected:
        return true;
     }
 
-    int GetCelTempVal(int iRawTemp)
+    float GetCelTempVal(int iRawTemp)
     {
-       return (iTemp - 1024) / 10 + 1.9 + 0.5;
+       return (float)iRawTemp / 10.0 - 100.0;
     }
 
 protected:
@@ -122,14 +141,12 @@ bool isSync(unsigned int idx)
          return false;
       }
    }
-   printf("4 square waves detected\n");
    // check if there is a long sync period prior to the 4 squarewaves
    unsigned long t = timings[(idx + RING_BUFFER_SIZE - i) % RING_BUFFER_SIZE];
    if (t < (SYNC_LENGTH - 400) || t > (SYNC_LENGTH + 400) ||
        digitalRead(DATAPIN) != HIGH) {
       return false;
    }
-   printf("sync detected\n");
    return true;
 }
 
@@ -166,26 +183,18 @@ int t2b(unsigned int t0, unsigned int t1)
          return 0;
       }
    }
-   printf("t0 = %d t1 = %d\n", t0, t1);
    return -1;
-}
-
-void loop()
-{
-   delay(100);
 }
 
 int main(int argc, char *args[])
 {
-   if (wiringPiSetup() == -1) {
+   if (wiringPiSetup() == -1)
+   {
       printf("no wiring pi detected\n");
       return 0;
    }
 
    wiringPiISR(DATAPIN, INT_EDGE_BOTH, &handler);
-   //wiringPiISR(DATAPIN,INT_EDGE_BOTH,&data_handler);
-   while (true) {
-      loop();
-   }
-   exit(0);
+   while (true)
+      delay(100);
 }
